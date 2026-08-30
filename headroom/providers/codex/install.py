@@ -156,13 +156,7 @@ def build_codex_auth_config(auth_path: Path | None) -> str:
         return ""
 
     helper_path = auth_path.parent / _CODEX_API_KEY_HELPER_NAME
-    try:
-        if (
-            not helper_path.exists()
-            or helper_path.read_text(encoding="utf-8") != _CODEX_API_KEY_HELPER
-        ):
-            helper_path.write_text(_CODEX_API_KEY_HELPER, encoding="utf-8")
-    except OSError:
+    if not _ensure_codex_auth_helper(helper_path):
         return ""
 
     return (
@@ -170,6 +164,61 @@ def build_codex_auth_config(auth_path: Path | None) -> str:
         f"{json.dumps(sys.executable)}, args = [{json.dumps(str(helper_path.resolve()))}], "
         "refresh_interval_ms = 300000 }\n"
     )
+
+
+def _ensure_codex_auth_helper(helper_path: Path) -> bool:
+    """Create or validate the private, Headroom-owned auth helper."""
+    created = False
+    try:
+        # Never follow a user-created link or overwrite an unrelated file.
+        if helper_path.is_symlink():
+            return False
+        if helper_path.exists():
+            if not helper_path.is_file():
+                return False
+            if helper_path.read_text(encoding="utf-8") != _CODEX_API_KEY_HELPER:
+                return False
+            helper_path.chmod(0o600)
+            return True
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(helper_path, flags, 0o600)
+        created = True
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                fd = -1
+                handle.write(_CODEX_API_KEY_HELPER)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        helper_path.chmod(0o600)
+        return True
+    except (OSError, UnicodeError):
+        if created:
+            try:
+                if helper_path.is_file() and not helper_path.is_symlink():
+                    helper_path.unlink()
+            except OSError:
+                pass
+        return False
+
+
+def cleanup_codex_auth_helper(auth_path: Path) -> None:
+    """Remove a private helper only when it still contains Headroom code."""
+    helper_path = auth_path.parent / _CODEX_API_KEY_HELPER_NAME
+    try:
+        if (
+            helper_path.is_symlink()
+            or not helper_path.is_file()
+            or helper_path.read_text(encoding="utf-8") != _CODEX_API_KEY_HELPER
+        ):
+            return
+        helper_path.unlink()
+    except (OSError, UnicodeError):
+        return
 
 
 def _id_token_carries_chatgpt_account(raw: Any) -> bool:
@@ -321,6 +370,8 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
     if not path.exists():
         return
     content = path.read_text(encoding="utf-8")
+    helper_path = path.parent / _CODEX_API_KEY_HELPER_NAME
+    helper_was_referenced = str(helper_path.resolve()) in content
     # Remove the managed marker block.
     if _CODEX_MARKER_START in content:
         content = _CODEX_PATTERN.sub("", content)
@@ -330,6 +381,8 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
     content = _ORPHAN_OPENAI_BASE_URL.sub("", content)
     content = _ORPHAN_HEADROOM_TABLE.sub("", content)
     path.write_text(content.strip() + "\n", encoding="utf-8")
+    if helper_was_referenced:
+        cleanup_codex_auth_helper(path.parent / "auth.json")
     # Hand the threads back to the native-provider menu so the full history stays
     # visible once Codex no longer routes through Headroom. Best-effort.
     retag_to_native(path.parent)

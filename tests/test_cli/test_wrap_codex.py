@@ -283,6 +283,25 @@ class TestInjectAndRestoreRoundTrip:
         assert not config_file.exists()
         assert not (tmp_path / ".codex" / "config.toml.headroom-backup").exists()
 
+    def test_wrap_unwrap_removes_generated_auth_helper(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        (config_dir / "auth.json").write_text(
+            '{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8"
+        )
+
+        wrap_mod._inject_codex_provider_config(8787)
+        helper = config_dir / ".headroom-codex-auth.py"
+        assert helper.exists()
+
+        status, _ = wrap_mod._restore_codex_provider_config()
+
+        assert status == "removed"
+        assert not helper.exists()
+
     def test_wrap_unwrap_respects_codex_home(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

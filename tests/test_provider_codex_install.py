@@ -4,9 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from headroom.providers.codex.install import (
     build_codex_auth_config,
     build_provider_section,
+    cleanup_codex_auth_helper,
     codex_uses_api_key_auth,
     codex_uses_chatgpt_auth,
 )
@@ -84,10 +87,60 @@ def test_build_codex_auth_config_generates_helper_without_copying_key(tmp_path: 
     assert str(helper) in config
     assert "sk-test-only" not in config
     assert helper.read_text(encoding="utf-8").count("OPENAI_API_KEY") == 1
+    assert helper.stat().st_mode & 0o777 == 0o600
     result = subprocess.run(
         [sys.executable, str(helper)], capture_output=True, text=True, check=True
     )
     assert result.stdout == "sk-test-only"
+
+
+def test_build_codex_auth_config_does_not_overwrite_existing_helper(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+    helper = tmp_path / ".headroom-codex-auth.py"
+    helper.write_text("user content", encoding="utf-8")
+
+    assert build_codex_auth_config(auth) == ""
+    assert helper.read_text(encoding="utf-8") == "user content"
+
+
+def test_build_codex_auth_config_rejects_helper_symlink(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+    target = tmp_path / "user-file.txt"
+    target.write_text("user content", encoding="utf-8")
+    helper = tmp_path / ".headroom-codex-auth.py"
+    try:
+        helper.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+
+    assert build_codex_auth_config(auth) == ""
+    assert target.read_text(encoding="utf-8") == "user content"
+    assert helper.is_symlink()
+
+
+def test_build_codex_auth_config_handles_invalid_existing_helper(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+    helper = tmp_path / ".headroom-codex-auth.py"
+    helper.write_bytes(b"\xff\xfe")
+
+    assert build_codex_auth_config(auth) == ""
+    assert helper.read_bytes() == b"\xff\xfe"
+
+
+def test_cleanup_codex_auth_helper_only_removes_headroom_file(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+    build_codex_auth_config(auth)
+    helper = tmp_path / ".headroom-codex-auth.py"
+
+    cleanup_codex_auth_helper(auth)
+
+    assert not helper.exists()
 
 
 def test_build_codex_auth_config_skips_chatgpt_auth(tmp_path: Path) -> None:

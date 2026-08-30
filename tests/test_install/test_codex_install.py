@@ -9,6 +9,7 @@ from headroom.providers.codex.install import (
     apply_provider_scope,
     build_provider_section,
     codex_uses_chatgpt_auth,
+    revert_provider_scope,
 )
 
 
@@ -92,7 +93,8 @@ def test_api_key_auth_is_persisted_as_a_codex_command(tmp_path: Path, monkeypatc
     auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
     monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config)
 
-    apply_provider_scope(_manifest(tmp_path))
+    mutation = apply_provider_scope(_manifest(tmp_path))
+    assert mutation is not None
 
     content = config.read_text(encoding="utf-8")
     helper = tmp_path / ".headroom-codex-auth.py"
@@ -100,6 +102,10 @@ def test_api_key_auth_is_persisted_as_a_codex_command(tmp_path: Path, monkeypatc
     assert str(helper) in content
     assert "sk-test-only" not in content
     assert helper.exists()
+
+    revert_provider_scope(mutation, _manifest(tmp_path))
+
+    assert not helper.exists()
 
 
 def test_legacy_file_backed_account_id_stays_supported(tmp_path: Path) -> None:
