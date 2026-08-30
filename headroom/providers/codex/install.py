@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,22 @@ _ORPHAN_HEADROOM_TABLE = re.compile(
 _TOML_TABLE_HEADER_RE = re.compile(r"^[ \t]*(?:\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\])[ \t]*(?:#.*)?$")
 _ROOT_MODEL_PROVIDER_RE = re.compile(r"^[ \t]*model_provider[ \t]*=")
 _ROOT_OPENAI_BASE_URL_RE = re.compile(r"^[ \t]*openai_base_url[ \t]*=")
+_CODEX_API_KEY_HELPER_NAME = ".headroom-codex-auth.py"
+_CODEX_API_KEY_HELPER = """from pathlib import Path
+import json
+
+
+try:
+    auth = json.loads(Path(__file__).with_name("auth.json").read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(2)
+
+key = auth.get("OPENAI_API_KEY") if isinstance(auth, dict) else None
+if not isinstance(key, str) or not key.strip():
+    raise SystemExit(2)
+
+print(key, end="")
+"""
 
 
 def _codex_credential_store(config_dir: Path) -> str | None:
@@ -107,6 +124,54 @@ def codex_uses_chatgpt_auth(auth_path: Path) -> bool:
     return False
 
 
+def codex_uses_api_key_auth(auth_path: Path) -> bool:
+    """Whether Codex has a file-backed OpenAI API key.
+
+    A custom provider does not read Codex's ``auth.json`` when
+    ``requires_openai_auth`` is false.  Detect the API-key shape separately so
+    the generated provider can use Codex's command-backed bearer-token config
+    without forcing API-key users into the OAuth login flow.
+    """
+    try:
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("OPENAI_API_KEY"), str)
+        and bool(data["OPENAI_API_KEY"].strip())
+    )
+
+
+def build_codex_auth_config(auth_path: Path | None) -> str:
+    """Build a Codex provider auth command for a file-backed API key.
+
+    The helper is generated next to ``auth.json`` and emits only the token at
+    runtime.  The token is never copied into Headroom's environment or the
+    generated TOML configuration.
+    """
+    if auth_path is None or codex_uses_chatgpt_auth(auth_path):
+        return ""
+    if not codex_uses_api_key_auth(auth_path):
+        return ""
+
+    helper_path = auth_path.parent / _CODEX_API_KEY_HELPER_NAME
+    try:
+        if (
+            not helper_path.exists()
+            or helper_path.read_text(encoding="utf-8") != _CODEX_API_KEY_HELPER
+        ):
+            helper_path.write_text(_CODEX_API_KEY_HELPER, encoding="utf-8")
+    except OSError:
+        return ""
+
+    return (
+        "auth = { command = "
+        f"{json.dumps(sys.executable)}, args = [{json.dumps(str(helper_path.resolve()))}], "
+        "refresh_interval_ms = 300000 }\n"
+    )
+
+
 def _id_token_carries_chatgpt_account(raw: Any) -> bool:
     """Whether an ``id_token`` carries the ChatGPT account claim (#3206).
 
@@ -150,6 +215,7 @@ def build_provider_section(
     marker_end: str = _CODEX_MARKER_END,
     include_markers: bool = True,
     requires_openai_auth: bool = False,
+    auth_path: Path | None = None,
 ) -> str:
     """Build a managed Codex provider block.
 
@@ -163,6 +229,7 @@ def build_provider_section(
         f'name = "{name}"\n'
         f'base_url = "{proxy_base_url(port)}"\n'
         "supports_websockets = true\n"
+        f"{build_codex_auth_config(auth_path)}"
     )
     if requires_openai_auth:
         body += "requires_openai_auth = true\n"
@@ -228,6 +295,7 @@ def apply_provider_scope(manifest: DeploymentManifest) -> ManagedMutation | None
             name="Headroom persistent proxy",
             include_markers=False,
             requires_openai_auth=codex_uses_chatgpt_auth(path.parent / "auth.json"),
+            auth_path=path.parent / "auth.json",
         )
         + f"{_CODEX_MARKER_END}\n"
     )

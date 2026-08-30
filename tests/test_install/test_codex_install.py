@@ -85,6 +85,23 @@ def test_file_backed_auth_preserves_existing_modes(tmp_path: Path) -> None:
     assert codex_uses_chatgpt_auth(auth) is False
 
 
+def test_api_key_auth_is_persisted_as_a_codex_command(tmp_path: Path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    auth = tmp_path / "auth.json"
+    config.write_text('model = "gpt-5"\n', encoding="utf-8")
+    auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config)
+
+    apply_provider_scope(_manifest(tmp_path))
+
+    content = config.read_text(encoding="utf-8")
+    helper = tmp_path / ".headroom-codex-auth.py"
+    assert "auth = { command =" in content
+    assert str(helper) in content
+    assert "sk-test-only" not in content
+    assert helper.exists()
+
+
 def test_legacy_file_backed_account_id_stays_supported(tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
     auth.write_text('{"tokens": {"account_id": "acct"}}', encoding="utf-8")

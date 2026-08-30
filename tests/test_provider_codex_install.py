@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
-from headroom.providers.codex.install import build_provider_section, codex_uses_chatgpt_auth
+from headroom.providers.codex.install import (
+    build_codex_auth_config,
+    build_provider_section,
+    codex_uses_api_key_auth,
+    codex_uses_chatgpt_auth,
+)
 
 
 def test_codex_provider_section_omits_requires_openai_auth_by_default() -> None:
@@ -50,6 +57,44 @@ def test_codex_uses_chatgpt_auth_false_for_api_key(tmp_path: Path) -> None:
     auth.write_text('{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}', encoding="utf-8")
 
     assert codex_uses_chatgpt_auth(auth) is False
+
+
+def test_codex_uses_api_key_auth_detects_file_backed_key(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY": "sk-x"}', encoding="utf-8")
+
+    assert codex_uses_api_key_auth(auth) is True
+
+
+def test_codex_uses_api_key_auth_rejects_missing_or_blank_key(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    for document in ("{}", '{"OPENAI_API_KEY": "  "}', "not json"):
+        auth.write_text(document, encoding="utf-8")
+        assert codex_uses_api_key_auth(auth) is False
+
+
+def test_build_codex_auth_config_generates_helper_without_copying_key(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+
+    config = build_codex_auth_config(auth)
+    helper = tmp_path / ".headroom-codex-auth.py"
+
+    assert "auth = { command =" in config
+    assert str(helper) in config
+    assert "sk-test-only" not in config
+    assert helper.read_text(encoding="utf-8").count("OPENAI_API_KEY") == 1
+    result = subprocess.run(
+        [sys.executable, str(helper)], capture_output=True, text=True, check=True
+    )
+    assert result.stdout == "sk-test-only"
+
+
+def test_build_codex_auth_config_skips_chatgpt_auth(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"auth_mode": "chatgpt"}', encoding="utf-8")
+
+    assert build_codex_auth_config(auth) == ""
 
 
 def test_codex_uses_chatgpt_auth_false_for_missing_or_malformed(tmp_path: Path) -> None:

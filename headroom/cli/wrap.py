@@ -94,7 +94,7 @@ from headroom.providers.claude import (
 )
 from headroom.providers.claude.runtime import TOOL_SEARCH_FOUNDRY_DEFAULT
 from headroom.providers.codex import build_launch_env as _build_codex_launch_env
-from headroom.providers.codex.install import codex_uses_chatgpt_auth
+from headroom.providers.codex.install import build_codex_auth_config, codex_uses_chatgpt_auth
 from headroom.providers.codex.threads import retag_to_headroom, retag_to_native
 from headroom.providers.copilot import (
     build_launch_env as _build_copilot_launch_env,
@@ -3091,6 +3091,7 @@ def _inject_codex_provider_config(port: int) -> str | None:
     requires_openai_auth = (
         "requires_openai_auth = true\n" if codex_uses_chatgpt_auth(config_dir / "auth.json") else ""
     )
+    auth_config = build_codex_auth_config(config_dir / "auth.json")
     # Per-project savings: Codex sends the X-Headroom-Project header only
     # when the mapped env var (HEADROOM_PROJECT, set by `headroom wrap
     # codex`) exists at Codex runtime. When a custom upstream was detected,
@@ -3106,6 +3107,7 @@ def _inject_codex_provider_config(port: int) -> str | None:
         'name = "OpenAI via Headroom proxy"\n'
         f'base_url = "http://127.0.0.1:{port}/v1"\n'
         f"supports_websockets = true\n"
+        f"{auth_config}"
         f"{requires_openai_auth}"
         # Inline table keeps the key inside this section so
         # _strip_codex_headroom_blocks removes it with the rest of the block.
