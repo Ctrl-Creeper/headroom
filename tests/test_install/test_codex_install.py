@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised only on Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from headroom.install.models import DeploymentManifest
 from headroom.providers.codex.install import (
@@ -99,7 +105,9 @@ def test_api_key_auth_is_persisted_as_a_codex_command(tmp_path: Path, monkeypatc
     content = config.read_text(encoding="utf-8")
     helper = tmp_path / ".headroom-codex-auth.py"
     assert "auth = { command =" in content
-    assert str(helper) in content
+    assert tomllib.loads(content)["model_providers"]["headroom"]["auth"]["args"] == [
+        str(helper.resolve())
+    ]
     assert "sk-test-only" not in content
     assert helper.exists()
 

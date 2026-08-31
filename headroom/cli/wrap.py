@@ -97,6 +97,7 @@ from headroom.providers.codex import build_launch_env as _build_codex_launch_env
 from headroom.providers.codex.install import (
     build_codex_auth_config,
     cleanup_codex_auth_helper,
+    codex_auth_helper_is_referenced,
     codex_uses_chatgpt_auth,
 )
 from headroom.providers.codex.threads import retag_to_headroom, retag_to_native
@@ -3230,7 +3231,11 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
     # Case 1: pre-wrap snapshot exists — restore it exactly.
     if backup_file.exists():
         try:
-            helper_was_preexisting = str(helper_path.resolve()) in _read_text(backup_file)
+            helper_was_preexisting = (
+                codex_auth_helper_is_referenced(
+                    _read_text(backup_file), str(helper_path.resolve())
+                ) is not False
+            )
         except OSError:
             # If the backup cannot be inspected, preserve the helper rather than
             # risk deleting a file that predates this wrap.
@@ -3245,7 +3250,9 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
     if config_file.exists():
         original = _read_text(config_file)
         if _codex_config_has_headroom_markers(original):
-            helper_was_referenced = str(helper_path.resolve()) in original
+            helper_was_referenced = codex_auth_helper_is_referenced(
+                original, str(helper_path.resolve())
+            )
             # Without a backup, only remove named MCP blocks when this file
             # also carries wrap-owned provider markers from a full wrap.
             remove_named_mcp = any(
@@ -3266,11 +3273,11 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
                 # Nothing left but Headroom content — remove the file entirely
                 # so Codex falls back to its default config.
                 config_file.unlink()
-                if helper_was_referenced:
+                if helper_was_referenced is True:
                     cleanup_codex_auth_helper(helper_auth_path)
                 return "removed", config_file
             _write_text(config_file, cleaned)
-            if helper_was_referenced:
+            if helper_was_referenced is True:
                 cleanup_codex_auth_helper(helper_auth_path)
             return "cleaned", config_file
 

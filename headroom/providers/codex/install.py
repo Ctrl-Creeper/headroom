@@ -221,6 +221,24 @@ def cleanup_codex_auth_helper(auth_path: Path) -> None:
         return
 
 
+def codex_auth_helper_is_referenced(content: str, helper_path: str) -> bool | None:
+    """Whether parsed Codex TOML names this exact generated helper.
+
+    ``None`` means the configuration is not parseable, so callers can retain
+    the helper instead of risking deletion of a pre-existing user file.
+    """
+    try:
+        document = tomllib.loads(content)
+    except (tomllib.TOMLDecodeError, TypeError):
+        return None
+
+    providers = document.get("model_providers")
+    headroom = providers.get("headroom") if isinstance(providers, dict) else None
+    auth = headroom.get("auth") if isinstance(headroom, dict) else None
+    args = auth.get("args") if isinstance(auth, dict) else None
+    return isinstance(args, list) and helper_path in args
+
+
 def _id_token_carries_chatgpt_account(raw: Any) -> bool:
     """Whether an ``id_token`` carries the ChatGPT account claim (#3206).
 
@@ -371,7 +389,9 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
         return
     content = path.read_text(encoding="utf-8")
     helper_path = path.parent / _CODEX_API_KEY_HELPER_NAME
-    helper_was_referenced = str(helper_path.resolve()) in content
+    helper_was_referenced = codex_auth_helper_is_referenced(
+        content, str(helper_path.resolve())
+    )
     # Remove the managed marker block.
     if _CODEX_MARKER_START in content:
         content = _CODEX_PATTERN.sub("", content)
@@ -381,7 +401,7 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
     content = _ORPHAN_OPENAI_BASE_URL.sub("", content)
     content = _ORPHAN_HEADROOM_TABLE.sub("", content)
     path.write_text(content.strip() + "\n", encoding="utf-8")
-    if helper_was_referenced:
+    if helper_was_referenced is True:
         cleanup_codex_auth_helper(path.parent / "auth.json")
     # Hand the threads back to the native-provider menu so the full history stays
     # visible once Codex no longer routes through Headroom. Best-effort.

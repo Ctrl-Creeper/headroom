@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised only on Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from headroom.providers.codex.install import (
     build_codex_auth_config,
     build_provider_section,
     cleanup_codex_auth_helper,
+    codex_auth_helper_is_referenced,
     codex_uses_api_key_auth,
     codex_uses_chatgpt_auth,
 )
@@ -84,7 +91,7 @@ def test_build_codex_auth_config_generates_helper_without_copying_key(tmp_path: 
     helper = tmp_path / ".headroom-codex-auth.py"
 
     assert "auth = { command =" in config
-    assert str(helper) in config
+    assert tomllib.loads(config)["auth"]["args"] == [str(helper.resolve())]
     assert "sk-test-only" not in config
     assert helper.read_text(encoding="utf-8").count("OPENAI_API_KEY") == 1
     assert helper.stat().st_mode & 0o777 == 0o600
@@ -92,6 +99,16 @@ def test_build_codex_auth_config_generates_helper_without_copying_key(tmp_path: 
         [sys.executable, str(helper)], capture_output=True, text=True, check=True
     )
     assert result.stdout == "sk-test-only"
+
+
+def test_codex_auth_helper_reference_parses_toml_escaped_windows_path() -> None:
+    helper = r"C:\Users\example\.codex\.headroom-codex-auth.py"
+    config = (
+        "[model_providers.headroom]\n"
+        f"auth = {{ command = \"python\", args = [{json.dumps(helper)}] }}\n"
+    )
+
+    assert codex_auth_helper_is_referenced(config, helper) is True
 
 
 def test_build_codex_auth_config_does_not_overwrite_existing_helper(
