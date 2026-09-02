@@ -94,7 +94,8 @@ def test_build_codex_auth_config_generates_helper_without_copying_key(tmp_path: 
     assert tomllib.loads(config)["auth"]["args"] == [str(helper.resolve())]
     assert "sk-test-only" not in config
     assert helper.read_text(encoding="utf-8").count("OPENAI_API_KEY") == 1
-    assert helper.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert helper.stat().st_mode & 0o777 == 0o600
     result = subprocess.run(
         [sys.executable, str(helper)], capture_output=True, text=True, check=True
     )
