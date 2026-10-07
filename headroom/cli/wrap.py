@@ -109,9 +109,11 @@ from headroom.providers.claude import (
 from headroom.providers.claude.runtime import TOOL_SEARCH_FOUNDRY_DEFAULT
 from headroom.providers.codex import build_launch_env as _build_codex_launch_env
 from headroom.providers.codex.install import (
+    CodexAuthConfigError,
     build_codex_auth_config,
     cleanup_codex_auth_helper,
     codex_auth_helper_is_referenced,
+    codex_auth_helper_path,
     codex_uses_chatgpt_auth,
 )
 from headroom.providers.codex.threads import retag_to_headroom, retag_to_native
@@ -3498,7 +3500,10 @@ def _inject_codex_provider_config(port: int) -> str | None:
     requires_openai_auth = (
         "requires_openai_auth = true\n" if codex_uses_chatgpt_auth(config_dir / "auth.json") else ""
     )
-    auth_config = build_codex_auth_config(config_dir / "auth.json")
+    try:
+        auth_config = build_codex_auth_config(config_dir / "auth.json", config_path=config_file)
+    except CodexAuthConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
     # Per-project savings: Codex sends the X-Headroom-Project header only
     # when the mapped env var (HEADROOM_PROJECT, set by `headroom wrap
     # codex`) exists at Codex runtime. When a custom upstream was detected,
@@ -3630,15 +3635,14 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
     """
     config_file, backup_file = _codex_config_paths()
     helper_auth_path = config_file.parent / "auth.json"
-    helper_path = helper_auth_path.parent / ".headroom-codex-auth.py"
+    helper_path = codex_auth_helper_path(helper_auth_path, config_path=config_file)
 
     # Case 1: pre-wrap snapshot exists — restore it exactly.
     if backup_file.exists():
         try:
             helper_was_preexisting = (
-                codex_auth_helper_is_referenced(
-                    _read_text(backup_file), str(helper_path.resolve())
-                ) is not False
+                codex_auth_helper_is_referenced(_read_text(backup_file), str(helper_path.resolve()))
+                is not False
             )
         except OSError:
             # If the backup cannot be inspected, preserve the helper rather than
@@ -3647,7 +3651,7 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
         shutil.copy2(backup_file, config_file)
         backup_file.unlink()
         if not helper_was_preexisting:
-            cleanup_codex_auth_helper(helper_auth_path)
+            cleanup_codex_auth_helper(helper_auth_path, config_path=config_file)
         return "restored", config_file
 
     # Case 2: no backup, but config file exists and has markers — strip them.
@@ -3678,11 +3682,11 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
                 # so Codex falls back to its default config.
                 config_file.unlink()
                 if helper_was_referenced is True:
-                    cleanup_codex_auth_helper(helper_auth_path)
+                    cleanup_codex_auth_helper(helper_auth_path, config_path=config_file)
                 return "removed", config_file
             _write_text(config_file, cleaned)
             if helper_was_referenced is True:
-                cleanup_codex_auth_helper(helper_auth_path)
+                cleanup_codex_auth_helper(helper_auth_path, config_path=config_file)
             return "cleaned", config_file
 
     # Nothing to undo.

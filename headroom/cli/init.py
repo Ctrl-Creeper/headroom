@@ -36,6 +36,7 @@ from headroom.install.models import ConfigScope, InstallPreset, RuntimeKind, Sup
 from headroom.install.paths import (
     claude_settings_path,
     codex_config_path,
+    codex_home_dir,
     codex_hooks_path,
     codex_project_config_path,
     validate_profile_name,
@@ -56,7 +57,11 @@ from headroom.install.state import ManifestError, load_manifest, save_manifest
 from headroom.install.supervisors import start_supervisor
 from headroom.providers.claude import TOOL_SEARCH_DEFAULT, TOOL_SEARCH_ENV
 from headroom.providers.claude.runtime import TOOL_SEARCH_FOUNDRY_DEFAULT
-from headroom.providers.codex.install import build_codex_auth_config, codex_uses_chatgpt_auth
+from headroom.providers.codex.install import (
+    CodexAuthConfigError,
+    build_codex_auth_config,
+    codex_uses_chatgpt_auth,
+)
 from headroom.providers.codex.threads import retag_to_headroom
 
 from .main import main
@@ -361,15 +366,17 @@ def _ensure_codex_provider(path: Path, port: int) -> None:
 
     logger.debug("ensure codex provider block: %s (port=%s)", path, port)
     warn_codex_provider_port_change(path, port)
+    auth_path = codex_home_dir() / "auth.json"
     # Emit requires_openai_auth only for ChatGPT-OAuth users (restores the
     # account menu); omitting it for API-key users avoids forcing an OAuth
     # login (#406).
     requires_openai_auth = (
-        "requires_openai_auth = true\n"
-        if codex_uses_chatgpt_auth(path.parent / "auth.json")
-        else ""
+        "requires_openai_auth = true\n" if codex_uses_chatgpt_auth(auth_path) else ""
     )
-    auth_config = build_codex_auth_config(path.parent / "auth.json")
+    try:
+        auth_config = build_codex_auth_config(auth_path, config_path=path)
+    except CodexAuthConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
     block = (
         f"{_CODEX_PROVIDER_MARKER_START}\n"
         'model_provider = "headroom"\n'
@@ -404,6 +411,7 @@ def _ensure_codex_provider(path: Path, port: int) -> None:
         content, _CODEX_PROVIDER_MARKER_START, _CODEX_PROVIDER_MARKER_END, block, at_root=True
     )
     path.parent.mkdir(parents=True, exist_ok=True)
+    tomllib.loads(content)
     path.write_text(content, encoding="utf-8")
     # Codex filters its history menu by the active model_provider, so existing
     # native threads vanish once we switch to "headroom". Retag them to match the

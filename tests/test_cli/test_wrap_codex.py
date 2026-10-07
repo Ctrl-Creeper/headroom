@@ -464,7 +464,7 @@ class TestInjectAndRestoreRoundTrip:
         )
 
         wrap_mod._inject_codex_provider_config(8787)
-        helper = config_dir / ".headroom-codex-auth.py"
+        helper = wrap_mod.codex_auth_helper_path(config_dir / "auth.json")
         assert helper.exists()
         config = tomllib.loads((config_dir / "config.toml").read_text(encoding="utf-8"))
         assert config["model_providers"]["headroom"]["auth"]["args"] == [str(helper.resolve())]
@@ -509,7 +509,48 @@ class TestInjectAndRestoreRoundTrip:
 
         status, _ = wrap_mod._restore_codex_provider_config()
         assert status == "removed"
+
         assert not config_file.exists()
+
+    def test_wrap_helper_collision_aborts_before_backup(self, monkeypatch, tmp_path: Path) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        auth = config_dir / "auth.json"
+        auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+        config_file = config_dir / "config.toml"
+        original = 'model_provider = "openai"\n'
+        config_file.write_text(original, encoding="utf-8")
+        helper = wrap_mod.codex_auth_helper_path(auth, config_path=config_file)
+        helper.write_text("user content", encoding="utf-8")
+
+        with pytest.raises(
+            wrap_mod.click.ClickException, match="Codex provider configuration was not updated"
+        ):
+            wrap_mod._inject_codex_provider_config(8787)
+
+        assert config_file.read_text(encoding="utf-8") == original
+        assert not (config_dir / "config.toml.headroom-backup").exists()
+        assert helper.read_text(encoding="utf-8") == "user content"
+
+    def test_unwrap_keeps_helper_used_by_restored_custom_provider(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        auth = config_dir / "auth.json"
+        auth.write_text('{"OPENAI_API_KEY": "sk-test-only"}', encoding="utf-8")
+        original = "[model_providers.custom]\n" + wrap_mod.build_codex_auth_config(auth)
+        config_file = config_dir / "config.toml"
+        config_file.write_text(original, encoding="utf-8")
+
+        wrap_mod._inject_codex_provider_config(8787)
+        status, _ = wrap_mod._restore_codex_provider_config()
+
+        assert status == "restored"
+        assert config_file.read_text(encoding="utf-8") == original
+        assert wrap_mod.codex_auth_helper_path(auth).exists()
 
     def test_wrap_unwrap_restores_prior_model_provider(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
