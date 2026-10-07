@@ -150,6 +150,7 @@ from headroom.proxy.helpers import (
     _setup_file_logging,  # noqa: F401
     is_anthropic_auth,  # noqa: F401
     jitter_delay_ms,
+    overload_retry_is_futile,
     resolve_display_provider,
     retry_after_ms,
 )
@@ -2658,6 +2659,11 @@ class HeadroomProxy(
                         if (
                             not self.config.retry_enabled
                             or attempt >= self.config.retry_max_attempts - 1
+                            or overload_retry_is_futile(
+                                response,
+                                self.config.retry_max_delay_ms,
+                                retries_left=self.config.retry_max_attempts - attempt - 1,
+                            )
                         ):
                             return response
                         delay_ms = retry_after_ms(
@@ -4531,11 +4537,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     # published on host loopback, whose peer is the bridge gateway, still loads.
     _dashboard_gate = [Depends(_require_operator_read_client)]
 
+    # Effective licence state of THIS proxy, resolved once: an explicit
+    # ProxyConfig.license_key, else HEADROOM_LICENSE or its deprecated alias.
+    from headroom.license_env import resolve_license_token
+
+    _dashboard_licensed = bool(config.license_key) or bool(resolve_license_token())
+
     @app.get("/dashboard", response_class=HTMLResponse)
     @app.get("/dashboard/", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard():
         """Serve the Headroom dashboard UI."""
-        return get_dashboard_html()
+        return get_dashboard_html(licensed=_dashboard_licensed)
 
     # --- Dashboard settings API (loopback-gated, registry-validated) ---------
     # Read/write the curated HEADROOM_* knobs the settings GUI manages. Writes
