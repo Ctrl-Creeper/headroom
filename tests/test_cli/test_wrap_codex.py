@@ -2518,3 +2518,46 @@ class TestCodexLaunchExportsCustomUpstream:
     ) -> None:
         env = self._launch_env(monkeypatch, tmp_path, custom_upstream=None)
         assert wrap_mod._UPSTREAM_BASE_URL_ENV_VAR not in env
+
+
+@pytest.mark.parametrize("original", ["", 'model = "gpt-5"\n'])
+def test_unwrap_init_snapshot_removes_unreferenced_auth_helper(monkeypatch, tmp_path, original):
+    from headroom.cli import init as init_cli
+    from headroom.providers.codex.install import codex_auth_helper_path
+
+    _set_test_home(monkeypatch, tmp_path)
+    config = tmp_path / ".codex/config.toml"
+    config.parent.mkdir()
+    config.write_text(original, encoding="utf-8")
+    auth = config.with_name("auth.json")
+    auth.write_text('{"OPENAI_API_KEY":"test-key"}', encoding="utf-8")
+    init_cli._ensure_codex_provider(config, 8787)
+    helper = codex_auth_helper_path(auth, config_path=config)
+    assert helper.exists()
+    backup = wrap_mod._codex_config_paths()[1]
+    backup.write_text(config.read_text(encoding="utf-8"), encoding="utf-8")
+    wrap_mod._restore_codex_provider_config()
+    assert not helper.exists()
+    assert not backup.exists()
+    if original:
+        assert tomllib.loads(config.read_text(encoding="utf-8")) == tomllib.loads(original)
+    else:
+        assert not config.exists()
+
+
+@pytest.mark.parametrize("with_backup", [False, True])
+def test_unwrap_preserves_adopted_provider_options(monkeypatch, tmp_path, with_backup):
+    from headroom.cli import init as init_cli
+
+    _set_test_home(monkeypatch, tmp_path)
+    config = tmp_path / ".codex/config.toml"
+    config.parent.mkdir()
+    original = '[model_providers.headroom]\nbase_url = "http://127.0.0.1:9200/v1"\nrequest_max_retries = 7\n'
+    config.write_text(original, encoding="utf-8")
+    init_cli._ensure_codex_provider(config, 8787)
+    init_cli._ensure_codex_provider(config, 9500)
+    if with_backup:
+        backup = wrap_mod._codex_config_paths()[1]
+        backup.write_text(config.read_text(encoding="utf-8"), encoding="utf-8")
+    wrap_mod._restore_codex_provider_config()
+    assert tomllib.loads(config.read_text(encoding="utf-8")) == tomllib.loads(original)

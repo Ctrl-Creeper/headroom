@@ -3657,7 +3657,11 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
       content (created by wrap or init) and has been deleted.
     * ``"noop"``     — nothing to undo; no Headroom marker and no backup.
     """
-    from headroom.cli.init import _CODEX_PROVIDER_MARKER_START, _strip_codex_init_block
+    from headroom.cli.init import (
+        _CODEX_PROVIDER_MARKER_START,
+        _codex_init_provider_snapshot,
+        _strip_codex_init_block,
+    )
 
     config_file, backup_file = _codex_config_paths()
     helper_auth_path = config_file.parent / "auth.json"
@@ -3684,10 +3688,12 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
             if not cleaned.strip():
                 config_file.unlink(missing_ok=True)
                 backup_file.unlink()
-                if not helper_was_preexisting:
-                    cleanup_codex_auth_helper(helper_auth_path, config_path=config_file)
+                cleanup_codex_auth_helper(helper_auth_path, config_path=config_file)
                 return "removed", config_file
             _write_text(config_file, cleaned)
+            # Init's helper may predate wrap but its only reference was just
+            # removed. Cleanup checks all retained providers before deleting it.
+            cleanup_codex_auth_helper(helper_auth_path, config_path=config_file)
         else:
             shutil.copy2(backup_file, config_file)
         backup_file.unlink()
@@ -3716,12 +3722,19 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
             )
             # `headroom init codex` writes its own routing block, and nothing else
             # removes it (#3749). Strip it first so its markers go with its keys.
-            content = _strip_codex_init_block(original) if has_init_block else original
+            provider_snapshot = _codex_init_provider_snapshot(original) if has_init_block else None
+            content = (
+                _strip_codex_init_block(original, restore_provider=False)
+                if has_init_block
+                else original
+            )
             cleaned = _strip_codex_headroom_blocks(
                 content,
                 remove_mcp=True,
                 remove_named_mcp=remove_named_mcp,
             )
+            if provider_snapshot is not None:
+                cleaned = cleaned.rstrip() + "\n\n" + provider_snapshot
             if not cleaned.strip():
                 # Nothing left but Headroom content — remove the file entirely
                 # so Codex falls back to its default config.

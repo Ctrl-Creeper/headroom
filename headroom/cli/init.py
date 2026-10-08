@@ -345,9 +345,25 @@ def _strip_codex_root_routing_orphans(content: str) -> str:
     return root + rest
 
 
-def _strip_codex_init_block(content: str) -> str:
+_CODEX_PROVIDER_SNAPSHOT_PREFIX = "# Headroom init previous provider: "
+
+
+def _codex_init_provider_snapshot(content: str) -> str | None:
+    match = re.search(r"(?m)^" + re.escape(_CODEX_PROVIDER_SNAPSHOT_PREFIX) + r"([^\n]*)", content)
+    if match is None:
+        return None
+    snapshot = json.loads(match.group(1))
+    if not isinstance(snapshot, str):
+        raise ValueError("Invalid Headroom init provider snapshot")
+    tomllib.loads(snapshot)
+    return snapshot
+
+
+def _strip_codex_init_block(content: str, *, restore_provider: bool = True) -> str:
     """Remove all Headroom init-managed blocks and orphan keys from a Codex config.toml string."""
     import re
+
+    provider_snapshot = _codex_init_provider_snapshot(content)
 
     # Remove any provider marker → end marker span, possibly repeated.
     while _CODEX_PROVIDER_MARKER_START in content and _CODEX_PROVIDER_MARKER_END in content:
@@ -373,6 +389,8 @@ def _strip_codex_init_block(content: str) -> str:
         r"(?=^\[|\Z)"
     )
     content = orphan_headroom_table.sub("", content)
+    if restore_provider and provider_snapshot is not None:
+        content = content.rstrip() + "\n\n" + provider_snapshot
 
     return content.lstrip("\n").rstrip() + "\n" if content.strip() else ""
 
@@ -411,15 +429,26 @@ def _ensure_codex_provider(path: Path, port: int) -> None:
     content = path.read_text(encoding="utf-8") if path.exists() else ""
     # Adopt an existing unmarked provider table instead of declaring it twice.
     # Keep user options that are not owned by the generated provider block.
+    provider_snapshot = _codex_init_provider_snapshot(content)
     provider_table = re.search(
         r"(?m)^[ \t]*\[model_providers\.headroom\][ \t]*(?:#[^\n]*)?\r?\n", content
     )
     if provider_table:
         next_table = re.search(r"(?m)^[ \t]*\[", content[provider_table.end() :])
         table_end = provider_table.end() + next_table.start() if next_table else len(content)
+        if provider_snapshot is None and _CODEX_PROVIDER_MARKER_START not in content:
+            provider_snapshot = content[provider_table.start() : table_end]
         existing_options = content[provider_table.end() : table_end]
+        existing_options = re.sub(
+            r"(?m)^" + re.escape(_CODEX_PROVIDER_SNAPSHOT_PREFIX) + r"[^\n]*(?:\n|$)",
+            "",
+            existing_options,
+        )
         existing_options = existing_options.replace(_CODEX_PROVIDER_MARKER_END, "")
-        generated_keys = re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9]*)[ \t]*=", block)
+        generated_keys = set(re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9]*)[ \t]*=", block))
+        generated_keys.update(
+            {"auth", "env_key", "requires_openai_auth", "experimental_bearer_token"}
+        )
         for key in generated_keys:
             existing_options = re.sub(
                 rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=[^\n]*(?:\n|$)",
@@ -435,6 +464,14 @@ def _ensure_codex_provider(path: Path, port: int) -> None:
     content = _replace_marker_block(
         content, _CODEX_PROVIDER_MARKER_START, _CODEX_PROVIDER_MARKER_END, "", at_root=True
     )
+    if provider_snapshot is not None:
+        block = block.replace(
+            _CODEX_PROVIDER_MARKER_END,
+            _CODEX_PROVIDER_SNAPSHOT_PREFIX
+            + json.dumps(provider_snapshot)
+            + "\n"
+            + _CODEX_PROVIDER_MARKER_END,
+        )
     # init owns the ROOT-level model_provider/openai_base_url: drop any prior
     # root assignment so we replace it instead of emitting a duplicate top-level
     # key (#260). Scope the strip to the document root (everything before the
