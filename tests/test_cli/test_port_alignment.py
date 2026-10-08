@@ -331,6 +331,26 @@ class TestCodexProviderPortWarning:
         assert "port 9200" in capsys.readouterr().err
         assert 'base_url = "http://127.0.0.1:8787/v1"' in config.read_text(encoding="utf-8")
 
+    def test_init_provider_preserves_user_options_on_repoint(self, tmp_path, monkeypatch):
+        import tomllib
+
+        monkeypatch.setattr(init_mod, "retag_to_headroom", lambda _path: None)
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[model_providers.headroom]\n"
+            'base_url = "http://127.0.0.1:9200/v1"\n'
+            "request_max_retries = 7\n"
+            '[profiles.work]\nmodel_provider = "custom"\n',
+            encoding="utf-8",
+        )
+        for port in (8787, 9500):
+            init_mod._ensure_codex_provider(config, port)
+            parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+            provider = parsed["model_providers"]["headroom"]
+            assert provider["base_url"] == f"http://127.0.0.1:{port}/v1"
+            assert provider["request_max_retries"] == 7
+            assert parsed["profiles"]["work"]["model_provider"] == "custom"
+
 
 class TestInitPortResolution:
     def _ctx(self, args: list[str]) -> click.Context:

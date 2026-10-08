@@ -409,6 +409,32 @@ def _ensure_codex_provider(path: Path, port: int) -> None:
         f"{_CODEX_PROVIDER_MARKER_END}"
     )
     content = path.read_text(encoding="utf-8") if path.exists() else ""
+    # Adopt an existing unmarked provider table instead of declaring it twice.
+    # Keep user options that are not owned by the generated provider block.
+    provider_table = re.search(
+        r"(?m)^[ \t]*\[model_providers\.headroom\][ \t]*(?:#[^\n]*)?\r?\n", content
+    )
+    if provider_table:
+        next_table = re.search(r"(?m)^[ \t]*\[", content[provider_table.end() :])
+        table_end = provider_table.end() + next_table.start() if next_table else len(content)
+        existing_options = content[provider_table.end() : table_end]
+        existing_options = existing_options.replace(_CODEX_PROVIDER_MARKER_END, "")
+        generated_keys = re.findall(r"(?m)^([A-Za-z_][A-Za-z_0-9]*)[ \t]*=", block)
+        for key in generated_keys:
+            existing_options = re.sub(
+                rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=[^\n]*(?:\n|$)",
+                "",
+                existing_options,
+            )
+        block = block.replace(
+            _CODEX_PROVIDER_MARKER_END,
+            existing_options + _CODEX_PROVIDER_MARKER_END,
+        )
+        if _CODEX_PROVIDER_MARKER_START not in content:
+            content = content[: provider_table.start()] + content[table_end:]
+    content = _replace_marker_block(
+        content, _CODEX_PROVIDER_MARKER_START, _CODEX_PROVIDER_MARKER_END, "", at_root=True
+    )
     # init owns the ROOT-level model_provider/openai_base_url: drop any prior
     # root assignment so we replace it instead of emitting a duplicate top-level
     # key (#260). Scope the strip to the document root (everything before the
